@@ -1,0 +1,40 @@
+# DistSpMV_Balanced — Configuration Template
+# ============================================
+# Copy this file to config.local.yaml and adjust for your environment.
+
+# ── Execution ─────────────────────────────────────────────────────────
+execution:
+  mpiexec: "mpiexec"           # Path to MPI launcher
+  mpi_args: "--oversubscribe"  # Extra flags for mpiexec
+  python: "python"             # Python interpreter
+
+# ── Hardware ──────────────────────────────────────────────────────────
+hardware:
+  threads_per_rank: 4          # OMP_NUM_THREADS / MKL_NUM_THREADS
+
+# ── Experiment ────────────────────────────────────────────────────────
+experiment:
+  seed: 42
+  reorder: "rcm"               # rcm | metis | none
+  benchmark_repetitions: 50
+  warmup_repetitions: 5
+
+  # Process counts to sweep (used by run_exp.sh)
+  process_counts: [1, 2, 4, 8, 16, 32, 64]
+
+  # Matrices to test (representative subset from paper Table I)
+  matrices:
+    - cant
+    - road_central
+    - inline_1
+    - bone010
+
+# ── Output ────────────────────────────────────────────────────────────
+output:
+  results_dir: "results"
+  save_logs: true
+
+# ── Matrix download sources ───────────────────────────────────────────
+data:
+  suitesparse_mirror: "https://suitesparse-collection-website.herokuapp.com/MM"
+  local_dir: "data"

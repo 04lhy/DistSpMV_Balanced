@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large data files (keep only .gitkeep in data/)
+data/*.mtx
+data/*.tar.gz
+data/*/
+
+# Experiment outputs (keep directory structure with .gitkeep)
+results/*.json
+results/*.log
+
+# Local config overrides
+config.local.yaml
+
+# MPI / job scheduler artifacts
+*.o[0-9]*
+*.e[0-9]*
+core.*
