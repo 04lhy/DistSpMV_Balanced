@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(DistSpMV_Balanced LANGUAGES CXX C
+project(DistSpMV_Balanced LANGUAGES CXX
         VERSION 2.0.0
         DESCRIPTION "Distributed SpMV with balanced computation and communication")
 
@@ -23,6 +23,7 @@ add_executable(dist_spmv
     src/utils.cpp
     src/reordering.cpp
     src/partition.cpp
+    src/redistribute.cpp
     src/comm_setup.cpp
     src/spmv_solver.cpp
 )
@@ -104,7 +105,7 @@ if(BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_spmv.cpp")
     enable_testing()
     add_executable(test_spmv tests/test_spmv.cpp
         src/mmio.cpp src/utils.cpp src/reordering.cpp
-        src/partition.cpp src/comm_setup.cpp src/spmv_solver.cpp
+        src/partition.cpp src/redistribute.cpp src/comm_setup.cpp src/spmv_solver.cpp
     )
     target_include_directories(test_spmv PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_spmv PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX)

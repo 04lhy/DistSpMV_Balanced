@@ -113,6 +113,7 @@ DistSpMV_Balanced/
 │   ├── utils.hpp / utils.cpp   # CSR 工具, GFlops, 误差计算
 │   ├── reordering.hpp/cpp      # RCM / METIS 矩阵重排序
 │   ├── partition.hpp/cpp       # 算法 1: 对角块列边界扩展
+│   ├── redistribute.hpp/cpp    # 远程矩阵按 nnz 重分布（论文第三节 B 部分）
 │   ├── comm_setup.hpp/cpp      # 算法 2: 通信调度构建
 │   ├── spmv_solver.hpp/cpp     # 算法 3+4: MPI 通信 + OpenMP 本地 SpMV
 │   └── main.cpp                # 主入口, 流水线编排
@@ -130,8 +131,9 @@ DistSpMV_Balanced/
 
 | 论文    | 源文件                | 核心函数                    | 描述                          |
 |---------|-----------------------|-----------------------------|-------------------------------|
-| 算法 1  | `src/partition.cpp`   | `diagonal_block_expand()`   | 贪心对角块列边界扩展           |
-| 算法 2  | `src/comm_setup.cpp`  | `build_schedule()`          | Allgather → 扫描 → Alltoall → Isend/Irecv |
+| 算法 1  | `src/partition.cpp`      | `diagonal_block_expand()`      | 贪心对角块列边界扩展           |
+| nnz 重分布 | `src/redistribute.cpp` | `redistribute_remote_by_nnz()` | 按非零元数量重平衡远程矩阵，再运行算法 1 |
+| 算法 2  | `src/comm_setup.cpp`     | `build_schedule()`             | Allgather → 扫描 → Alltoall → Isend/Irecv |
 | 算法 3  | `src/spmv_solver.cpp` | `exchange_remote()`         | MPI 非阻塞向量交换             |
 | 算法 4  | `src/spmv_solver.cpp` | `local_spmv()`              | OpenMP nnz-均衡本地 SpMV       |
 
@@ -151,6 +153,20 @@ DistSpMV_Balanced/
 5. 当所有行满足或无法继续扩展时停止
 
 **复杂度：** O(N + nnz_local)，使用哈希表加速列→行查找。
+
+### 远程矩阵 nnz 重分布（论文核心策略）
+
+**目标：** 算法 1 确保了对角块内的计算均衡，但远程矩阵（`[left, right)` 之外的非零元）在各进程间可能严重不均——稀疏矩阵各行 nnz 差异可达几个数量级。论文的第三个关键策略是按非零元数量重新分配远程矩阵的行，使各进程负责的远程 nnz 总量大致相等。
+
+**步骤：**
+1. 统计每行在 `[left, right)` 外的远程非零元数量 `remote_nnz[i]`
+2. `MPI_Allgather` 收集各进程的远程 nnz 总量，计算全局前缀
+3. 根据 `global_remote_total / nprocs` 计算每进程的目标远程 nnz
+4. 在 `q × target_per_proc` 边界处找到分割行（跨进程协调）
+5. 通过 `MPI_Alltoall` + `MPI_Isend/Irecv` 交换行数据到新归属进程
+6. 重排并重建本地 CSR；**重新运行算法 1** 以适配新的行范围
+
+**复杂度：** O(nnz_local)，通信量与远程非零元规模成比例。
 
 ### 算法 2 — 通信调度构建
 

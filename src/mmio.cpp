@@ -38,6 +38,9 @@ CSRMatrix read_mtx(const std::string& filepath) {
         std::exit(1);
     }
 
+    // Field types: 0=real, 1=pattern, 2=integer, 3=complex
+    enum { FIELD_REAL, FIELD_PATTERN, FIELD_INTEGER, FIELD_COMPLEX } field = FIELD_REAL;
+
     char line[4096];
     bool is_symmetric = false;
     bool is_coordinate = true;
@@ -60,6 +63,13 @@ CSRMatrix read_mtx(const std::string& filepath) {
                 }
                 if (std::strstr(p, "array")) {
                     is_coordinate = false;
+                }
+                if (std::strstr(p, "pattern")) {
+                    field = FIELD_PATTERN;
+                } else if (std::strstr(p, "integer")) {
+                    field = FIELD_INTEGER;
+                } else if (std::strstr(p, "complex")) {
+                    field = FIELD_COMPLEX;
                 }
             }
             continue;
@@ -128,7 +138,23 @@ CSRMatrix read_mtx(const std::string& filepath) {
 
     idx_t ri, ci;
     double rv;
-    while (std::fscanf(fp, "%d %d %lf", &ri, &ci, &rv) == 3) {
+    while (true) {
+        int nread = 0;
+        if (field == FIELD_PATTERN) {
+            nread = std::fscanf(fp, "%d %d", &ri, &ci);
+            rv = 1.0;
+        } else if (field == FIELD_INTEGER) {
+            int iv;
+            nread = std::fscanf(fp, "%d %d %d", &ri, &ci, &iv);
+            rv = static_cast<double>(iv);
+        } else if (field == FIELD_COMPLEX) {
+            double imag;
+            nread = std::fscanf(fp, "%d %d %lf %lf", &ri, &ci, &rv, &imag);
+            // Take real part only
+        } else {
+            nread = std::fscanf(fp, "%d %d %lf", &ri, &ci, &rv);
+        }
+        if (nread < 2) break;
         ri -= 1;  // 1-based → 0-based
         ci -= 1;
         triples.push_back({ri, ci, rv});
@@ -157,10 +183,18 @@ CSRMatrix read_mtx(const std::string& filepath) {
     }
 
     // ── Sort columns within each row and deduplicate ──
+    // Build fresh arrays to avoid O(nrows × nnz) from repeated erase.
+    std::vector<idx_t> new_rowptr(nrows + 1);
+    std::vector<idx_t> new_colidx;
+    std::vector<val_t> new_values;
+    new_colidx.reserve(rowptr.back());
+    new_values.reserve(rowptr.back());
+
     for (idx_t i = 0; i < nrows; ++i) {
+        new_rowptr[i] = static_cast<idx_t>(new_colidx.size());
         idx_t start = rowptr[i];
         idx_t end = rowptr[i + 1];
-        if (end - start <= 1) continue;
+        if (end == start) continue;
 
         // Sort by column index
         std::vector<std::pair<idx_t, val_t>> row_entries;
@@ -170,62 +204,33 @@ CSRMatrix read_mtx(const std::string& filepath) {
         }
         std::sort(row_entries.begin(), row_entries.end());
 
-        // Deduplicate: sum values for same column
-        idx_t w = start;
-        colidx[w] = row_entries[0].first;
-        values[w] = row_entries[0].second;
+        // Deduplicate: sum values for same column, skip zeros
+        val_t accum = row_entries[0].second;
+        idx_t cur_col = row_entries[0].first;
         for (std::size_t k = 1; k < row_entries.size(); ++k) {
-            if (row_entries[k].first == colidx[w]) {
-                values[w] += row_entries[k].second;
+            if (row_entries[k].first == cur_col) {
+                accum += row_entries[k].second;
             } else {
-                ++w;
-                colidx[w] = row_entries[k].first;
-                values[w] = row_entries[k].second;
-            }
-        }
-        rowptr[i] = start;
-        // Compact
-        idx_t new_end = w + 1;
-        if (new_end < end) {
-            colidx.erase(colidx.begin() + new_end, colidx.begin() + end);
-            values.erase(values.begin() + new_end, values.begin() + end);
-            // Adjust subsequent row pointers
-            idx_t delta = end - new_end;
-            for (idx_t k = i + 1; k <= nrows; ++k) {
-                rowptr[k] -= delta;
-            }
-        }
-    }
-
-    // Remove zero entries
-    for (idx_t i = 0; i < nrows; ++i) {
-        idx_t& start = rowptr[i];
-        idx_t end = rowptr[i + 1];
-        idx_t w = start;
-        for (idx_t j = start; j < end; ++j) {
-            if (values[j] != 0.0) {
-                if (w != j) {
-                    colidx[w] = colidx[j];
-                    values[w] = values[j];
+                if (accum != 0.0) {
+                    new_colidx.push_back(cur_col);
+                    new_values.push_back(accum);
                 }
-                ++w;
+                cur_col = row_entries[k].first;
+                accum = row_entries[k].second;
             }
         }
-        idx_t removed = end - w;
-        if (removed > 0) {
-            colidx.erase(colidx.begin() + w, colidx.begin() + end);
-            values.erase(values.begin() + w, values.begin() + end);
-            for (idx_t k = i + 1; k <= nrows; ++k) {
-                rowptr[k] -= removed;
-            }
+        if (accum != 0.0) {
+            new_colidx.push_back(cur_col);
+            new_values.push_back(accum);
         }
     }
+    new_rowptr[nrows] = static_cast<idx_t>(new_colidx.size());
 
-    int64_t total_nnz = rowptr.back();
+    int64_t total_nnz = new_rowptr.back();
     return CSRMatrix{
-        std::move(rowptr),
-        std::move(colidx),
-        std::move(values),
+        std::move(new_rowptr),
+        std::move(new_colidx),
+        std::move(new_values),
         nrows, ncols, total_nnz,
     };
 }

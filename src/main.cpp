@@ -15,20 +15,29 @@
  */
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include <mpi.h>
 
 #include "comm_setup.hpp"
 #include "mmio.hpp"
 #include "partition.hpp"
+#include "redistribute.hpp"
 #include "reordering.hpp"
 #include "spmv_solver.hpp"
 #include "types.hpp"
@@ -118,8 +127,8 @@ int main(int argc, char* argv[]) {
 
     // Parse args (all ranks need the values; rank 0 parses, others bcast)
     Args args;
-    int threads, benchmark, warmup, seed;
-    bool no_verify;
+    int threads = 0, benchmark = 0, warmup = 0, seed = 0;
+    bool no_verify = false;
 
     if (rank == 0) {
         args = parse_args(argc, argv);
@@ -193,6 +202,8 @@ int main(int argc, char* argv[]) {
     }
 
     MPI_Bcast(rowptr_g.data(), nrows_g + 1, MPI_INT, 0, MPI_COMM_WORLD);
+    assert(nnz_g <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
+           "nnz exceeds MPI int range");
     MPI_Bcast(colidx_g.data(), static_cast<int>(nnz_g), MPI_INT,
               0, MPI_COMM_WORLD);
     MPI_Bcast(val_g.data(), static_cast<int>(nnz_g), MPI_DOUBLE,
@@ -224,6 +235,21 @@ int main(int argc, char* argv[]) {
         local_rowptr.data(), local_colidx.data(),
         nlocal, r_start, r_end, ncols_g, MPI_COMM_WORLD);
     double t_algo1 = MPI_Wtime() - t_algo1_start;
+
+    // ── Step 4.5: Redistribute remote matrix by nnz (paper core strategy) ──
+    double t_redis_start = MPI_Wtime();
+    redistribute_remote_by_nnz(
+        local_rowptr, local_colidx, local_val,
+        nlocal, r_start, r_end, left, right,
+        ncols_g, MPI_COMM_WORLD);
+
+    // Re-run Algorithm 1 on redistributed data
+    auto [left2, right2] = diagonal_block_expand(
+        local_rowptr.data(), local_colidx.data(),
+        nlocal, r_start, r_end, ncols_g, MPI_COMM_WORLD);
+    left = left2;
+    right = right2;
+    double t_algo1_redis = MPI_Wtime() - t_redis_start;  // includes redistribution + re-Algo1
 
     // ── Step 5: Algorithm 2 — communication schedule ──
     double t_algo2_start = MPI_Wtime();
@@ -330,13 +356,13 @@ int main(int argc, char* argv[]) {
             auto slash_pos = outdir.find_last_of("/\\");
             if (slash_pos != std::string::npos) {
                 std::string dir = outdir.substr(0, slash_pos);
-                // mkdir equivalent via system is best-effort on Windows
+                // Best-effort directory creation — ignore errors (dir may
+                // already exist or lack permissions).
 #ifdef _WIN32
-                std::string cmd = "mkdir \"" + dir + "\" 2>nul";
+                _mkdir(dir.c_str());
 #else
-                std::string cmd = "mkdir -p \"" + dir + "\"";
+                mkdir(dir.c_str(), 0755);
 #endif
-                std::system(cmd.c_str());
             }
 
             FILE* fp = std::fopen(args.output.c_str(), "w");
@@ -358,6 +384,8 @@ int main(int argc, char* argv[]) {
                              t_preprocess);
                 std::fprintf(fp, "  \"reorder_time_s\": %.6f,\n", t_reorder);
                 std::fprintf(fp, "  \"algo1_time_s\": %.6f,\n", t_algo1);
+                std::fprintf(fp, "  \"redistribute_time_s\": %.6f,\n",
+                             t_algo1_redis);
                 std::fprintf(fp, "  \"algo2_time_s\": %.6f,\n", t_algo2);
                 std::fprintf(fp, "  \"avg_spmv_time_s\": %.6f,\n", avg_time);
                 std::fprintf(fp, "  \"std_spmv_time_s\": %.6f,\n", std_time);

@@ -126,9 +126,8 @@ CSRMatrix reorder_matrix(const CSRMatrix& A, const std::string& method,
                          int nparts, int seed) {
     idx_t n = A.nrows;
 
-    if (method == "none" || nparts <= 1) {
+    if (method == "none") {
         std::fprintf(stdout, "Reordering: none (identity permutation)\n");
-        // Return a copy
         return CSRMatrix{
             A.rowptr, A.colidx, A.val,
             A.nrows, A.ncols, A.nnz,
@@ -146,6 +145,13 @@ CSRMatrix reorder_matrix(const CSRMatrix& A, const std::string& method,
     }
 #ifdef DISTSPMV_HAS_METIS
     else if (method == "metis") {
+        if (nparts <= 1) {
+            std::fprintf(stdout, "Reordering: metis skipped (nparts=%d <= 1)\n", nparts);
+            return CSRMatrix{
+                A.rowptr, A.colidx, A.val,
+                A.nrows, A.ncols, A.nnz,
+            };
+        }
         std::fprintf(stdout, "Reordering: METIS (nparts=%d)...\n", nparts);
         idx_t nvtxs = n;
         idx_t ncon = 1;

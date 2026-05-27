@@ -80,6 +80,10 @@ private:
     std::unordered_map<int, idx_t> remote_offset_;
     std::vector<idx_t> local_pos_;
 
+    // ── Pre-allocated communication buffers (reused across multiply calls) ──
+    std::unordered_map<int, std::vector<double>> send_bufs_;
+    std::unordered_map<int, std::vector<double>> recv_bufs_;
+
     // ── Partition info for column ownership lookups ──
     std::vector<idx_t> owner_r_start_;
     std::vector<idx_t> owner_r_end_;

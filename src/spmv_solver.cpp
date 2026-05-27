@@ -26,7 +26,7 @@ DistSpMVSolver::DistSpMVSolver(
     MPI_Comm_rank(comm_, &rank_);
     MPI_Comm_size(comm_, &nprocs_);
 
-    nnz_local_ = (rowptr != nullptr) ? rowptr[nlocal] : 0;
+    nnz_local_ = rowptr[nlocal];
     diag_len_ = right - left;
 
     // Copy CSR data
@@ -86,7 +86,7 @@ DistSpMVSolver::DistSpMVSolver(
 
     // ── Build thread partitioning by nnz per row ──
     thread_bounds_.push_back(0);
-    if (n_threads_ > 1) {
+    if (n_threads_ > 1 && nlocal_ > 0) {
         int64_t total_nnz = nnz_local_;
         int64_t target_per_thread = std::max(int64_t(1),
                                               total_nnz / n_threads_);
@@ -99,13 +99,31 @@ DistSpMVSolver::DistSpMVSolver(
                 acc = 0;
             }
         }
+        // If we didn't generate enough chunks, fall back to even row split
+        if (static_cast<int>(thread_bounds_.size()) < n_threads_ + 1) {
+            thread_bounds_.clear();
+            thread_bounds_.push_back(0);
+            for (int t = 1; t < n_threads_; ++t) {
+                thread_bounds_.push_back((nlocal_ * t) / n_threads_);
+            }
+        }
     }
     thread_bounds_.push_back(nlocal_);
 
-    std::printf("[rank %2d] DistSpMVSolver: nlocal=%d nnz_local=%lld "
-                "diag_len=%d total_remote=%d n_threads=%d\n",
-                rank_, nlocal_, nnz_local_, diag_len_,
-                total_remote_, n_threads_);
+    // ── Pre-allocate communication buffers ──
+    for (auto& [q, cols] : sched_.sendid) {
+        send_bufs_[q].resize(cols.size());
+    }
+    for (auto& [q, cols] : sched_.recvid) {
+        recv_bufs_[q].resize(cols.size());
+    }
+
+    if (rank_ == 0) {
+        std::printf("[rank %2d] DistSpMVSolver: nlocal=%d nnz_local=%lld "
+                    "diag_len=%d total_remote=%d n_threads=%d\n",
+                    rank_, nlocal_, nnz_local_, diag_len_,
+                    total_remote_, n_threads_);
+    }
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -152,34 +170,35 @@ void DistSpMVSolver::exchange_remote(const double* x_global) {
         x_buf_[c - left_] = x_global[c];
     }
 
-    // 2. Pack send buffers
-    std::unordered_map<int, std::vector<double>> send_bufs;
+    // 2. Pack send buffers (reuse pre-allocated)
     for (auto& [q, cols] : sched_.sendid) {
         std::size_t n = cols.size();
         if (n == 0) continue;
-        send_bufs[q].resize(n);
+        auto& buf = send_bufs_[q];
         for (std::size_t k = 0; k < n; ++k) {
-            send_bufs[q][k] = x_global[cols[k]];
+            buf[k] = x_global[cols[k]];
         }
     }
 
     // 3. Post receives for incoming remote x elements
-    std::unordered_map<int, std::vector<double>> recv_bufs;
     std::vector<MPI_Request> recv_reqs;
+    recv_reqs.reserve(sched_.recvid.size());
 
     for (auto& [q, cols] : sched_.recvid) {
         std::size_t n = cols.size();
         if (n == 0) continue;
-        recv_bufs[q].resize(n);
         MPI_Request req;
-        MPI_Irecv(recv_bufs[q].data(), static_cast<int>(n), MPI_DOUBLE,
+        MPI_Irecv(recv_bufs_[q].data(), static_cast<int>(n), MPI_DOUBLE,
                   q, 200 + q, comm_, &req);
         recv_reqs.push_back(req);
     }
 
     // 4. Post sends
     std::vector<MPI_Request> send_reqs;
-    for (auto& [q, buf] : send_bufs) {
+    send_reqs.reserve(sched_.sendid.size());
+    for (auto& [q, cols] : sched_.sendid) {
+        if (cols.empty()) continue;
+        auto& buf = send_bufs_[q];
         MPI_Request req;
         MPI_Isend(buf.data(), static_cast<int>(buf.size()), MPI_DOUBLE,
                   q, 200 + rank_, comm_, &req);
@@ -196,9 +215,11 @@ void DistSpMVSolver::exchange_remote(const double* x_global) {
                 MPI_STATUSES_IGNORE);
 
     // 6. Unpack received data into x_buf
-    for (auto& [q, buf] : recv_bufs) {
+    for (auto& [q, cols] : sched_.recvid) {
+        if (cols.empty()) continue;
         idx_t offset = diag_len_ + remote_offset_.at(q);
-        for (std::size_t k = 0; k < buf.size(); ++k) {
+        const auto& buf = recv_bufs_[q];
+        for (std::size_t k = 0; k < cols.size(); ++k) {
             x_buf_[offset + k] = buf[k];
         }
     }
@@ -226,13 +247,10 @@ void DistSpMVSolver::local_spmv(double* y_out) {
 #ifdef _OPENMP
         tid = omp_get_thread_num();
 #endif
-        if (tid >= n_chunks) {
-            // extra threads idle — skip
-        } else {
+        if (tid < n_chunks) {
             idx_t start_row = thread_bounds_[tid];
             idx_t end_row = thread_bounds_[tid + 1];
 
-            // Private accumulator for this thread's rows
             for (idx_t i = start_row; i < end_row; ++i) {
                 double acc = 0.0;
                 idx_t js = rowptr[i];
@@ -258,10 +276,11 @@ idx_t DistSpMVSolver::nnz_diag() const {
 }
 
 int DistSpMVSolver::find_owner_fast(idx_t col) const {
-    for (int q = 0; q < nprocs_; ++q) {
-        if (owner_r_start_[q] <= col && col < owner_r_end_[q]) return q;
-    }
-    return rank_;
+    // Binary search: owner_r_start_ is monotonic for contiguous 1-D partitioning.
+    auto it = std::upper_bound(owner_r_start_.begin(), owner_r_start_.end(), col);
+    if (it == owner_r_start_.begin()) return 0;
+    int q = static_cast<int>(it - owner_r_start_.begin()) - 1;
+    return (col < owner_r_end_[q]) ? q : rank_;
 }
 
 }  // namespace distspmv

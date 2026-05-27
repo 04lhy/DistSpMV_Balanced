@@ -46,9 +46,11 @@ std::pair<idx_t, idx_t> diagonal_block_expand(
 
     int rank;
     MPI_Comm_rank(comm, &rank);
-    std::printf("[rank %2d] Algo1 init: left=%d right=%d local_max_diag=%d "
-                "lower_bound=%d\n",
-                rank, left, right, local_max, lower_bound);
+    if (rank == 0) {
+        std::printf("[rank %2d] Algo1 init: left=%d right=%d local_max_diag=%d "
+                    "lower_bound=%d\n",
+                    rank, left, right, local_max, lower_bound);
+    }
 
     // ── S3: Build column-to-rows index for fast lookup ──
     // Only for columns that appear in this local partition
@@ -74,8 +76,10 @@ std::pair<idx_t, idx_t> diagonal_block_expand(
         }
 
         if (deficient.empty()) {
-            std::printf("[rank %2d] Algo1 converged after %d iterations\n",
-                        rank, iter);
+            if (rank == 0) {
+                std::printf("[rank %2d] Algo1 converged after %d iterations\n",
+                            rank, iter);
+            }
             break;
         }
 
@@ -101,9 +105,11 @@ std::pair<idx_t, idx_t> diagonal_block_expand(
         }
 
         if (left_gain == 0 && right_gain == 0) {
-            std::printf("[rank %2d] Algo1 stalled at iter %d: %zu rows "
-                        "deficient\n",
-                        rank, iter, deficient.size());
+            if (rank == 0) {
+                std::printf("[rank %2d] Algo1 stalled at iter %d: %zu rows "
+                            "deficient\n",
+                            rank, iter, deficient.size());
+            }
             break;
         }
 
@@ -131,9 +137,11 @@ std::pair<idx_t, idx_t> diagonal_block_expand(
         }
     }
 
-    std::printf("[rank %2d] Algo1 result: left=%d right=%d "
-                "(initial [%d,%d))\n",
-                rank, left, right, r_start, std::min(r_end, ncols));
+    if (rank == 0) {
+        std::printf("[rank %2d] Algo1 result: left=%d right=%d "
+                    "(initial [%d,%d))\n",
+                    rank, left, right, r_start, std::min(r_end, ncols));
+    }
 
     return {left, right};
 }

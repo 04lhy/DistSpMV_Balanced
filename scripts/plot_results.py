@@ -255,7 +255,7 @@ def print_summary_table(records: List[dict]) -> None:
                 cells.append("—")
         print("| " + " | ".join(cells) + " |")
 
-    print("\n*GFlops = (2 × nnz) / (avg_time × 10⁹)*\n")
+    print("\n*GFlops = (2 x nnz) / (avg_time x 10^9)*\n")
 
 
 # ──────────────────────────────────────────────────────────────────────

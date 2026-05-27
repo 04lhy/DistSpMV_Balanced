@@ -9,13 +9,13 @@
 
 namespace distspmv {
 
-// Helper: find owner rank for global column c
+// Helper: find owner rank for global column c (binary search on monotonic ranges)
 static int find_owner(idx_t c, const idx_t* all_r_start,
                       const idx_t* all_r_end, int nprocs) {
-    for (int q = 0; q < nprocs; ++q) {
-        if (all_r_start[q] <= c && c < all_r_end[q]) return q;
-    }
-    return nprocs - 1;  // fallback
+    auto it = std::upper_bound(all_r_start, all_r_start + nprocs, c);
+    if (it == all_r_start) return 0;
+    int q = static_cast<int>(it - all_r_start) - 1;
+    return (c < all_r_end[q]) ? q : nprocs - 1;
 }
 
 CommSchedule build_schedule(
@@ -123,10 +123,12 @@ CommSchedule build_schedule(
     int64_t total_recv = 0, total_send = 0;
     for (auto& [_, cols] : sched.recvid) total_recv += cols.size();
     for (auto& [_, cols] : sched.sendid) total_send += cols.size();
-    std::printf("[rank %2d] Algo2: send to %zu peers (%lld elems), "
-                "recv from %zu peers (%lld elems)\n",
-                rank, sched.sendid.size(), total_send,
-                sched.recvid.size(), total_recv);
+    if (rank == 0) {
+        std::printf("[rank %2d] Algo2: send to %zu peers (%lld elems), "
+                    "recv from %zu peers (%lld elems)\n",
+                    rank, sched.sendid.size(), total_send,
+                    sched.recvid.size(), total_recv);
+    }
 
     return sched;
 }
