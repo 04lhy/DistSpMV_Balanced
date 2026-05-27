@@ -1,10 +1,9 @@
-# Python
+# Python (plotting scripts)
 __pycache__/
 *.py[cod]
 *.pyo
 *.egg-info/
 dist/
-build/
 .eggs/
 *.whl
 *.so
@@ -13,6 +12,17 @@ build/
 venv/
 .venv/
 env/
+
+# C++ build artifacts
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.o
+*.obj
+*.exe
+Makefile
 
 # IDE
 .vscode/
@@ -30,18 +40,23 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
+# Papers / PDFs
+*.pdf
+
 # OS
 .DS_Store
 Thumbs.db
 
-# Large data files (keep only .gitkeep in data/)
+# Large data files (keep small test matrix and .gitkeep in data/)
 data/*.mtx
+!data/test_small.mtx
 data/*.tar.gz
 data/*/
 
 # Experiment outputs (keep directory structure with .gitkeep)
 results/*.json
 results/*.log
+figures/*.png
 
 # Local config overrides
 config.local.yaml

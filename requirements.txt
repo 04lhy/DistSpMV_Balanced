@@ -1,24 +1,7 @@
-# DistSpMV_Balanced - Dependencies
-# Python 3.10+ required
+# DistSpMV_Balanced - Python dependencies (plotting only)
+# The C++ binary is built with CMake + MPI + OpenMP (see README).
+# Python 3.8+ required for the experiment visualisation script.
 
-# Core MPI
-mpi4py>=3.1.5
-
-# Sparse matrix support
-scipy>=1.10.0
 numpy>=1.24.0
-
-# Graph partitioning (optional but strongly recommended)
-# pip install pymetis  -- may require METIS system library
-# Alternative: networkx-based fallback included
-networkx>=3.0
-
-# Configuration
-pyyaml>=6.0
-
-# Visualization (for experiment reports)
 matplotlib>=3.7.0
 seaborn>=0.12.0
-
-# Testing
-pytest>=7.3.0

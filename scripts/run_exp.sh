@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================================
-# run_exp.sh — One-click experiment launcher for DistSpMV_Balanced
+# run_exp.sh — One-click experiment launcher for DistSpMV_Balanced (C++)
 # ============================================================================
 #
 # Usage:
 #   bash scripts/run_exp.sh --procs 8 --threads 4 --matrix data/cant.mtx
 #   bash scripts/run_exp.sh --procs 1,2,4,8 --threads 4 --suite all
-#   bash scripts/run_exp.sh --procs 8 --threads 4 --matrix road_central.mtx --reorder metis
 #
 # Prerequisites:
 #   - MPI implementation (OpenMPI / MPICH) with mpiexec on PATH
-#   - Python 3.10+ with dependencies from requirements.txt installed
+#   - C++ build: mkdir build && cd build && cmake .. && make
 # ============================================================================
 
 set -euo pipefail
@@ -25,7 +24,7 @@ BENCHMARK=50
 WARMUP=5
 SEED=42
 OUTDIR="results"
-PYTHON="${PYTHON:-python}"
+BINARY="${BINARY:-./build/dist_spmv}"
 MPIEXEC="${MPIEXEC:-mpiexec}"
 MPI_ARGS="${MPI_ARGS:-}"
 
@@ -39,22 +38,17 @@ Options:
   --threads N         OMP_NUM_THREADS per rank (default: 4)
   --matrix PATH       Single .mtx file to benchmark
   --suite NAME        Predefined matrix suite: all | representative | paper
-  --reorder METHOD    reordering: rcm | metis | none (default: rcm)
+  --reorder METHOD    Reordering: rcm | metis | none (default: rcm)
   --benchmark N       Number of timed SpMV repetitions (default: 50)
   --warmup N          Number of warmup calls (default: 5)
   --seed N            Random seed (default: 42)
   --outdir DIR        Output directory for JSON results (default: results)
+  --binary PATH       Path to dist_spmv binary (default: ./build/dist_spmv)
   --mpiexec PATH      Path to mpiexec (default: mpiexec)
-  --python PATH       Path to Python interpreter (default: python)
   --help              Show this message
 
-Representative matrices (paper Table I subset):
-  cant, road_central, inline_1, bone010
-
-Full SuiteSparse set (20 matrices from paper):
-  cant, road_central, inline_1, bone010, pdb1HYS, consph, cop20k_A,
-  torso1, thermomech_dM, hood, bmwcra_1, torso2, torso3, Dubcova2,
-  qa8fm, m_t1, nd6k, rail_5177, pwtk, shipsec1
+For both suites, download .mtx files into data/ first (see README).
+"representative" currently = audikw_1; "paper" = 20 matrices.
 EOF
     exit 0
 }
@@ -71,8 +65,8 @@ while [[ $# -gt 0 ]]; do
         --warmup)   WARMUP="$2"; shift 2 ;;
         --seed)     SEED="$2"; shift 2 ;;
         --outdir)   OUTDIR="$2"; shift 2 ;;
+        --binary)   BINARY="$2"; shift 2 ;;
         --mpiexec)  MPIEXEC="$2"; shift 2 ;;
-        --python)   PYTHON="$2"; shift 2 ;;
         --help)     usage ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
@@ -101,17 +95,25 @@ else
     usage
 fi
 
+# ── Verify binary exists ──────────────────────────────────────────────
+if [[ ! -f "$BINARY" ]]; then
+    echo "ERROR: Binary not found at $BINARY"
+    echo "  Build it first:"
+    echo "    mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j"
+    exit 1
+fi
+
 # ── Environment ───────────────────────────────────────────────────────
 export OMP_NUM_THREADS=$THREADS
-export OPENBLAS_NUM_THREADS=1   # prevent BLAS from oversubscribing cores
-export MKL_NUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
+export OMP_PROC_BIND=spread
+export OMP_PLACES=threads
 
 mkdir -p "$OUTDIR"
 
 echo "============================================"
-echo " DistSpMV_Balanced Experiment Runner"
+echo " DistSpMV_Balanced (C++) Experiment Runner"
 echo "============================================"
+echo " Binary    : $BINARY"
 echo " MPI procs : $PROCS"
 echo " Threads   : $THREADS"
 echo " Reorder   : $REORDER"
@@ -120,7 +122,7 @@ echo " Seed      : $SEED"
 echo " Output    : $OUTDIR/"
 echo "============================================"
 
-# ── Locate the main module ───────────────────────────────────────────
+# ── Locate the project root ───────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
@@ -129,48 +131,26 @@ cd "$PROJECT_DIR"
 IFS=',' read -ra PROC_ARRAY <<< "$PROCS"
 
 for mtx_name in $MATRICES; do
-    # Determine .mtx file path
     if [[ -f "data/${mtx_name}.mtx" ]]; then
         MTX_PATH="data/${mtx_name}.mtx"
     elif [[ -f "${DATADIR:-}/${mtx_name}.mtx" ]]; then
         MTX_PATH="${DATADIR}/${mtx_name}.mtx"
     else
-        echo "[WARN] Matrix file not found for '$mtx_name' — downloading..."
-        mkdir -p data
-        # SuiteSparse URL template
-        SS_URL="https://suitesparse-collection-website.herokuapp.com/MM"
-        for grp in GHS_indef GHS_psdef HB NDimensionalGroup; do
-            URL="${SS_URL}/${grp}/${mtx_name}.tar.gz"
-            if curl -sIL --connect-timeout 5 "$URL" | grep -q "200 OK"; then
-                echo "  Found at $URL"
-                curl -sL "$URL" -o "data/${mtx_name}.tar.gz"
-                tar -xzf "data/${mtx_name}.tar.gz" -C data/
-                # Find .mtx inside extracted dir
-                MTX_FILE=$(find data -name "${mtx_name}.mtx" | head -1)
-                if [[ -n "$MTX_FILE" ]]; then
-                    cp "$MTX_FILE" "data/${mtx_name}.mtx"
-                fi
-                break
-            fi
-        done
-        MTX_PATH="data/${mtx_name}.mtx"
-        if [[ ! -f "$MTX_PATH" ]]; then
-            echo "[SKIP] Could not download $mtx_name"
-            continue
-        fi
+        echo "[WARN] Matrix file not found for '$mtx_name' — skipping."
+        echo "  Download from https://sparse.tamu.edu/ and place in data/"
+        continue
     fi
 
     for np in "${PROC_ARRAY[@]}"; do
-        np=$(echo "$np" | xargs)  # trim whitespace
+        np=$(echo "$np" | xargs)
         echo ""
         echo ">>> Running: mtx=$mtx_name  np=$np  threads=$THREADS"
 
         OUT_FILE="${OUTDIR}/${mtx_name}_p${np}_t${THREADS}.json"
-
         LOG_FILE="${OUTDIR}/${mtx_name}_p${np}_t${THREADS}.log"
 
         $MPIEXEC -n "$np" $MPI_ARGS \
-            $PYTHON -m src.main \
+            "$BINARY" \
             --matrix "$MTX_PATH" \
             --threads "$THREADS" \
             --reorder "$REORDER" \
